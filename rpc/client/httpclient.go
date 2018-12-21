@@ -75,7 +75,7 @@ func (c *HTTP) ABCIQuery(path string, data cmn.HexBytes) (*ctypes.ResultABCIQuer
 func (c *HTTP) ABCIQueryWithOptions(path string, data cmn.HexBytes, opts ABCIQueryOptions) (*ctypes.ResultABCIQuery, error) {
 	result := new(ctypes.ResultABCIQuery)
 	_, err := c.rpc.Call("abci_query",
-		map[string]interface{}{"path": path, "data": data, "height": opts.Height, "trusted": opts.Trusted},
+		map[string]interface{}{"path": path, "data": data, "height": opts.Height, "prove": opts.Prove},
 		result)
 	if err != nil {
 		return nil, errors.Wrap(err, "ABCIQuery")
@@ -105,6 +105,24 @@ func (c *HTTP) broadcastTX(route string, tx types.Tx) (*ctypes.ResultBroadcastTx
 	_, err := c.rpc.Call(route, map[string]interface{}{"tx": tx}, result)
 	if err != nil {
 		return nil, errors.Wrap(err, route)
+	}
+	return result, nil
+}
+
+func (c *HTTP) UnconfirmedTxs(limit int) (*ctypes.ResultUnconfirmedTxs, error) {
+	result := new(ctypes.ResultUnconfirmedTxs)
+	_, err := c.rpc.Call("unconfirmed_txs", map[string]interface{}{"limit": limit}, result)
+	if err != nil {
+		return nil, errors.Wrap(err, "unconfirmed_txs")
+	}
+	return result, nil
+}
+
+func (c *HTTP) NumUnconfirmedTxs() (*ctypes.ResultUnconfirmedTxs, error) {
+	result := new(ctypes.ResultUnconfirmedTxs)
+	_, err := c.rpc.Call("num_unconfirmed_txs", map[string]interface{}{}, result)
+	if err != nil {
+		return nil, errors.Wrap(err, "num_unconfirmed_txs")
 	}
 	return result, nil
 }

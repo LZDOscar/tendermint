@@ -1,8 +1,11 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/pkg/errors"
 
+	"github.com/tendermint/tendermint/p2p"
 	ctypes "github.com/tendermint/tendermint/rpc/core/types"
 )
 
@@ -14,6 +17,11 @@ import (
 //
 // ```go
 // client := client.NewHTTP("tcp://0.0.0.0:26657", "/websocket")
+// err := client.Start()
+// if err != nil {
+//   // handle error
+// }
+// defer client.Stop()
 // info, err := client.NetInfo()
 // ```
 //
@@ -23,7 +31,7 @@ import (
 // {
 // 	"error": "",
 // 	"result": {
-//		"n_peers": 0,
+//		"n_peers": "0",
 // 		"peers": [],
 // 		"listeners": [
 // 			"Listener(@10.0.2.15:26656)"
@@ -37,8 +45,12 @@ import (
 func NetInfo() (*ctypes.ResultNetInfo, error) {
 	peers := []ctypes.Peer{}
 	for _, peer := range p2pPeers.Peers().List() {
+		nodeInfo, ok := peer.NodeInfo().(p2p.DefaultNodeInfo)
+		if !ok {
+			return nil, fmt.Errorf("peer.NodeInfo() is not DefaultNodeInfo")
+		}
 		peers = append(peers, ctypes.Peer{
-			NodeInfo:         peer.NodeInfo(),
+			NodeInfo:         nodeInfo,
 			IsOutbound:       peer.IsOutbound(),
 			ConnectionStatus: peer.Status(),
 		})
@@ -88,6 +100,11 @@ func UnsafeDialPeers(peers []string, persistent bool) (*ctypes.ResultDialPeers, 
 //
 // ```go
 // client := client.NewHTTP("tcp://0.0.0.0:26657", "/websocket")
+// err := client.Start()
+// if err != nil {
+//   // handle error
+// }
+// defer client.Stop()
 // genesis, err := client.Genesis()
 // ```
 //
@@ -102,7 +119,7 @@ func UnsafeDialPeers(peers []string, persistent bool) (*ctypes.ResultDialPeers, 
 // 			"validators": [
 // 				{
 // 					"name": "",
-// 					"power": 10,
+// 					"power": "10",
 // 					"pub_key": {
 // 						"data": "68DFDA7E50F82946E7E8546BED37944A422CD1B831E70DF66BA3B8430593944D",
 // 						"type": "ed25519"

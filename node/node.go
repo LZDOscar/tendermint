@@ -3,7 +3,6 @@ package node
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,10 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	amino "github.com/tendermint/go-amino"
+	"github.com/rs/cors"
 
+	amino "github.com/tendermint/go-amino"
 	abci "github.com/tendermint/tendermint/abci/types"
 	bc "github.com/tendermint/tendermint/blockchain"
 	cfg "github.com/tendermint/tendermint/config"
@@ -32,8 +33,7 @@ import (
 	rpccore "github.com/tendermint/tendermint/rpc/core"
 	ctypes "github.com/tendermint/tendermint/rpc/core/types"
 	grpccore "github.com/tendermint/tendermint/rpc/grpc"
-	rpc "github.com/tendermint/tendermint/rpc/lib"
-	rpcserver "github.com/tendermint/tendermint/rpc/lib/server"
+	"github.com/tendermint/tendermint/rpc/lib/server"
 	sm "github.com/tendermint/tendermint/state"
 	"github.com/tendermint/tendermint/state/txindex"
 	"github.com/tendermint/tendermint/state/txindex/kv"
@@ -98,16 +98,17 @@ func DefaultNewNode(config *cfg.Config, logger log.Logger) (*Node, error) {
 }
 
 // MetricsProvider returns a consensus, p2p and mempool Metrics.
-type MetricsProvider func() (*cs.Metrics, *p2p.Metrics, *mempl.Metrics)
+type MetricsProvider func() (*cs.Metrics, *p2p.Metrics, *mempl.Metrics, *sm.Metrics)
 
 // DefaultMetricsProvider returns Metrics build using Prometheus client library
 // if Prometheus is enabled. Otherwise, it returns no-op Metrics.
 func DefaultMetricsProvider(config *cfg.InstrumentationConfig) MetricsProvider {
-	return func() (*cs.Metrics, *p2p.Metrics, *mempl.Metrics) {
+	return func() (*cs.Metrics, *p2p.Metrics, *mempl.Metrics, *sm.Metrics) {
 		if config.Prometheus {
-			return cs.PrometheusMetrics(), p2p.PrometheusMetrics(), mempl.PrometheusMetrics()
+			return cs.PrometheusMetrics(config.Namespace), p2p.PrometheusMetrics(config.Namespace),
+				mempl.PrometheusMetrics(config.Namespace), sm.PrometheusMetrics(config.Namespace)
 		}
-		return cs.NopMetrics(), p2p.NopMetrics(), mempl.NopMetrics()
+		return cs.NopMetrics(), p2p.NopMetrics(), mempl.NopMetrics(), sm.NopMetrics()
 	}
 }
 
@@ -195,8 +196,8 @@ func NewNode(config *cfg.Config,
 		return nil, fmt.Errorf("Error starting proxy app connections: %v", err)
 	}
 
-	// Create the handshaker, which calls RequestInfo and replays any blocks
-	// as necessary to sync tendermint with the app.
+	// Create the handshaker, which calls RequestInfo, sets the AppVersion on the state,
+	// and replays any blocks as necessary to sync tendermint with the app.
 	consensusLogger := logger.With("module", "consensus")
 	handshaker := cs.NewHandshaker(stateDB, state, blockStore, genDoc)
 	handshaker.SetLogger(consensusLogger)
@@ -204,28 +205,34 @@ func NewNode(config *cfg.Config,
 		return nil, fmt.Errorf("Error during handshake: %v", err)
 	}
 
-	// reload the state (it may have been updated by the handshake)
+	// Reload the state. It will have the Version.Consensus.App set by the
+	// Handshake, and may have other modifications as well (ie. depending on
+	// what happened during block replay).
 	state = sm.LoadState(stateDB)
 
-	// If an address is provided, listen on the socket for a
-	// connection from an external signing process.
-	if config.PrivValidatorListenAddr != "" {
-		var (
-			// TODO: persist this key so external signer
-			// can actually authenticate us
-			privKey = ed25519.GenPrivKey()
-			pvsc    = privval.NewSocketPV(
-				logger.With("module", "privval"),
-				config.PrivValidatorListenAddr,
-				privKey,
-			)
+	// Log the version info.
+	logger.Info("Version info",
+		"software", version.TMCoreSemVer,
+		"block", version.BlockProtocol,
+		"p2p", version.P2PProtocol,
+	)
+
+	// If the state and software differ in block version, at least log it.
+	if state.Version.Consensus.Block != version.BlockProtocol {
+		logger.Info("Software and state have different block protocols",
+			"software", version.BlockProtocol,
+			"state", state.Version.Consensus.Block,
 		)
+	}
 
-		if err := pvsc.Start(); err != nil {
-			return nil, fmt.Errorf("Error starting private validator client: %v", err)
+	if config.PrivValidatorListenAddr != "" {
+		// If an address is provided, listen on the socket for a connection from an
+		// external signing process.
+		// FIXME: we should start services inside OnStart
+		privValidator, err = createAndStartPrivValidatorSocketClient(config.PrivValidatorListenAddr, logger)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error with private validator socket client")
 		}
-
-		privValidator = pvsc
 	}
 
 	// Decide whether to fast-sync or not
@@ -245,7 +252,7 @@ func NewNode(config *cfg.Config,
 		consensusLogger.Info("This node is not a validator", "addr", privValidator.GetAddress(), "pubKey", privValidator.GetPubKey())
 	}
 
-	csMetrics, p2pMetrics, memplMetrics := metricsProvider()
+	csMetrics, p2pMetrics, memplMetrics, smMetrics := metricsProvider()
 
 	// Make MempoolReactor
 	mempool := mempl.NewMempool(
@@ -253,21 +260,14 @@ func NewNode(config *cfg.Config,
 		proxyApp.Mempool(),
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
-		mempl.WithPreCheck(
-			mempl.PreCheckAminoMaxBytes(
-				types.MaxDataBytesUnknownEvidence(
-					state.ConsensusParams.BlockSize.MaxBytes,
-					state.Validators.Size(),
-				),
-			),
-		),
-		mempl.WithPostCheck(
-			mempl.PostCheckMaxGas(state.ConsensusParams.BlockSize.MaxGas),
-		),
+		mempl.WithPreCheck(sm.TxPreCheck(state)),
+		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
 	mempoolLogger := logger.With("module", "mempool")
 	mempool.SetLogger(mempoolLogger)
-	mempool.InitWAL() // no need to have the mempool wal during tests
+	if config.Mempool.WalEnabled() {
+		mempool.InitWAL() // no need to have the mempool wal during tests
+	}
 	mempoolReactor := mempl.NewMempoolReactor(config.Mempool, mempool)
 	mempoolReactor.SetLogger(mempoolLogger)
 
@@ -289,7 +289,14 @@ func NewNode(config *cfg.Config,
 
 	blockExecLogger := logger.With("module", "state")
 	// make block executor for consensus and blockchain reactors to execute blocks
-	blockExec := sm.NewBlockExecutor(stateDB, blockExecLogger, proxyApp.Consensus(), mempool, evidencePool)
+	blockExec := sm.NewBlockExecutor(
+		stateDB,
+		blockExecLogger,
+		proxyApp.Consensus(),
+		mempool,
+		evidencePool,
+		sm.BlockExecutorWithMetrics(smMetrics),
+	)
 
 	// Make BlockchainReactor
 	bcReactor := bc.NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
@@ -303,13 +310,13 @@ func NewNode(config *cfg.Config,
 		blockStore,
 		mempool,
 		evidencePool,
-		cs.WithMetrics(csMetrics),
+		cs.StateMetrics(csMetrics),
 	)
 	consensusState.SetLogger(consensusLogger)
 	if privValidator != nil {
 		consensusState.SetPrivValidator(privValidator)
 	}
-	consensusReactor := cs.NewConsensusReactor(consensusState, fastSync)
+	consensusReactor := cs.NewConsensusReactor(consensusState, fastSync, cs.ReactorMetrics(csMetrics))
 	consensusReactor.SetLogger(consensusLogger)
 
 	eventBus := types.NewEventBus()
@@ -341,14 +348,26 @@ func NewNode(config *cfg.Config,
 	indexerService := txindex.NewIndexerService(txIndexer, eventBus)
 	indexerService.SetLogger(logger.With("module", "txindex"))
 
-	var (
-		p2pLogger = logger.With("module", "p2p")
-		nodeInfo  = makeNodeInfo(config, nodeKey.ID(), txIndexer, genDoc.ChainID)
+	p2pLogger := logger.With("module", "p2p")
+	nodeInfo, err := makeNodeInfo(
+		config,
+		nodeKey.ID(),
+		txIndexer,
+		genDoc.ChainID,
+		p2p.NewProtocolVersion(
+			version.P2PProtocol, // global
+			state.Version.Consensus.Block,
+			state.Version.Consensus.App,
+		),
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Setup Transport.
 	var (
-		transport   = p2p.NewMultiplexTransport(nodeInfo, *nodeKey)
+		mConnConfig = p2p.MConnConfig(config.P2P)
+		transport   = p2p.NewMultiplexTransport(nodeInfo, *nodeKey, mConnConfig)
 		connFilters = []p2p.ConnFilterFunc{}
 		peerFilters = []p2p.PeerFilterFunc{}
 	)
@@ -359,7 +378,6 @@ func NewNode(config *cfg.Config,
 
 	// Filter peers by addr or pubkey with an ABCI query.
 	// If the query return code is OK, add peer.
-	// XXX: Query format subject to change
 	if config.FilterPeers {
 		connFilters = append(
 			connFilters,
@@ -442,7 +460,7 @@ func NewNode(config *cfg.Config,
 				Seeds:    splitAndTrimEmpty(config.P2P.Seeds, ",", " "),
 				SeedMode: config.P2P.SeedMode,
 			})
-		pexReactor.SetLogger(p2pLogger)
+		pexReactor.SetLogger(logger.With("module", "pex"))
 		sw.AddReactor("PEX", pexReactor)
 	}
 
@@ -558,6 +576,11 @@ func (n *Node) OnStop() {
 	// TODO: gracefully disconnect from peers.
 	n.sw.Stop()
 
+	// stop mempool WAL
+	if n.config.Mempool.WalEnabled() {
+		n.mempoolReactor.Mempool.CloseWAL()
+	}
+
 	if err := n.transport.Close(); err != nil {
 		n.Logger.Error("Error closing transport", "err", err)
 	}
@@ -572,10 +595,8 @@ func (n *Node) OnStop() {
 		}
 	}
 
-	if pvsc, ok := n.privValidator.(*privval.SocketPV); ok {
-		if err := pvsc.Stop(); err != nil {
-			n.Logger.Error("Error stopping priv validator socket client", "err", err)
-		}
+	if pvsc, ok := n.privValidator.(cmn.Service); ok {
+		pvsc.Stop()
 	}
 
 	if n.prometheusSrv != nil {
@@ -584,14 +605,6 @@ func (n *Node) OnStop() {
 			n.Logger.Error("Prometheus HTTP server Shutdown", "err", err)
 		}
 	}
-}
-
-// RunForever waits for an interrupt signal and stops the node.
-func (n *Node) RunForever() {
-	// Sleep forever and then...
-	cmn.TrapSignal(func() {
-		n.Stop()
-	})
 }
 
 // ConfigureRPC sets all variables in rpccore so they will serve
@@ -633,30 +646,42 @@ func (n *Node) startRPC() ([]net.Listener, error) {
 		wm.SetLogger(rpcLogger.With("protocol", "websocket"))
 		mux.HandleFunc("/websocket", wm.WebsocketHandler)
 		rpcserver.RegisterRPCFuncs(mux, rpccore.Routes, coreCodec, rpcLogger)
-		listener, err := rpcserver.StartHTTPServer(
+
+		listener, err := rpcserver.Listen(
 			listenAddr,
-			mux,
-			rpcLogger,
 			rpcserver.Config{MaxOpenConnections: n.config.RPC.MaxOpenConnections},
 		)
 		if err != nil {
 			return nil, err
 		}
+
+		var rootHandler http.Handler = mux
+		if n.config.RPC.IsCorsEnabled() {
+			corsMiddleware := cors.New(cors.Options{
+				AllowedOrigins: n.config.RPC.CORSAllowedOrigins,
+				AllowedMethods: n.config.RPC.CORSAllowedMethods,
+				AllowedHeaders: n.config.RPC.CORSAllowedHeaders,
+			})
+			rootHandler = corsMiddleware.Handler(mux)
+		}
+
+		go rpcserver.StartHTTPServer(
+			listener,
+			rootHandler,
+			rpcLogger,
+		)
 		listeners[i] = listener
 	}
 
 	// we expose a simplified api over grpc for convenience to app devs
 	grpcListenAddr := n.config.RPC.GRPCListenAddress
 	if grpcListenAddr != "" {
-		listener, err := grpccore.StartGRPCServer(
-			grpcListenAddr,
-			grpccore.Config{
-				MaxOpenConnections: n.config.RPC.GRPCMaxOpenConnections,
-			},
-		)
+		listener, err := rpcserver.Listen(
+			grpcListenAddr, rpcserver.Config{MaxOpenConnections: n.config.RPC.GRPCMaxOpenConnections})
 		if err != nil {
 			return nil, err
 		}
+		go grpccore.StartGRPCServer(listener)
 		listeners = append(listeners, listener)
 	}
 
@@ -757,15 +782,17 @@ func makeNodeInfo(
 	nodeID p2p.ID,
 	txIndexer txindex.TxIndexer,
 	chainID string,
-) p2p.NodeInfo {
+	protocolVersion p2p.ProtocolVersion,
+) (p2p.NodeInfo, error) {
 	txIndexerStatus := "on"
 	if _, ok := txIndexer.(*null.TxIndex); ok {
 		txIndexerStatus = "off"
 	}
-	nodeInfo := p2p.NodeInfo{
-		ID:      nodeID,
-		Network: chainID,
-		Version: version.Version,
+	nodeInfo := p2p.DefaultNodeInfo{
+		ProtocolVersion: protocolVersion,
+		ID_:             nodeID,
+		Network:         chainID,
+		Version:         version.TMCoreSemVer,
 		Channels: []byte{
 			bc.BlockchainChannel,
 			cs.StateChannel, cs.DataChannel, cs.VoteChannel, cs.VoteSetBitsChannel,
@@ -773,13 +800,9 @@ func makeNodeInfo(
 			evidence.EvidenceChannel,
 		},
 		Moniker: config.Moniker,
-		Other: p2p.NodeInfoOther{
-			AminoVersion:     amino.Version,
-			P2PVersion:       p2p.Version,
-			ConsensusVersion: cs.Version,
-			RPCVersion:       fmt.Sprintf("%v/%v", rpc.Version, rpccore.Version),
-			TxIndex:          txIndexerStatus,
-			RPCAddress:       config.RPC.ListenAddress,
+		Other: p2p.DefaultNodeInfoOther{
+			TxIndex:    txIndexerStatus,
+			RPCAddress: config.RPC.ListenAddress,
 		},
 	}
 
@@ -795,7 +818,8 @@ func makeNodeInfo(
 
 	nodeInfo.ListenAddr = lAddr
 
-	return nodeInfo
+	err := nodeInfo.Validate()
+	return nodeInfo, err
 }
 
 //------------------------------------------------------------------------------
@@ -825,6 +849,36 @@ func saveGenesisDoc(db dbm.DB, genDoc *types.GenesisDoc) {
 		cmn.PanicCrisis(fmt.Sprintf("Failed to save genesis doc due to marshaling error: %v", err))
 	}
 	db.SetSync(genesisDocKey, bytes)
+}
+
+func createAndStartPrivValidatorSocketClient(
+	listenAddr string,
+	logger log.Logger,
+) (types.PrivValidator, error) {
+	var pvsc types.PrivValidator
+
+	protocol, address := cmn.ProtocolAndAddress(listenAddr)
+	switch protocol {
+	case "unix":
+		pvsc = privval.NewIPCVal(logger.With("module", "privval"), address)
+	case "tcp":
+		// TODO: persist this key so external signer
+		// can actually authenticate us
+		pvsc = privval.NewTCPVal(logger.With("module", "privval"), listenAddr, ed25519.GenPrivKey())
+	default:
+		return nil, fmt.Errorf(
+			"Wrong listen address: expected either 'tcp' or 'unix' protocols, got %s",
+			protocol,
+		)
+	}
+
+	if pvsc, ok := pvsc.(cmn.Service); ok {
+		if err := pvsc.Start(); err != nil {
+			return nil, errors.Wrap(err, "failed to start")
+		}
+	}
+
+	return pvsc, nil
 }
 
 // splitAndTrimEmpty slices s into all subslices separated by sep and returns a

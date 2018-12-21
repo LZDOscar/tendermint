@@ -95,7 +95,7 @@ The `Data` field must be strictly deterministic, but can be arbitrary data.
 
 ### Gas
 
-Ethereum introduced the notion of `gas` as an absract representation of the
+Ethereum introduced the notion of `gas` as an abstract representation of the
 cost of resources used by nodes when processing transactions. Every operation in the
 Ethereum Virtual Machine uses some amount of gas, and gas can be accepted at a market-variable price.
 Users propose a maximum amount of gas for their transaction; if the tx uses less, they get
@@ -114,8 +114,8 @@ should halt before it can use more resources than it requested.
 
 When `MaxGas > -1`, Tendermint enforces the following rules:
 
-    - `GasWanted <= MaxGas` for all txs in the mempool
-    - `(sum of GasWanted in a block) <= MaxGas` when proposing a block
+- `GasWanted <= MaxGas` for all txs in the mempool
+- `(sum of GasWanted in a block) <= MaxGas` when proposing a block
 
 If `MaxGas == -1`, no rules about gas are enforced.
 
@@ -123,9 +123,10 @@ Note that Tendermint does not currently enforce anything about Gas in the consen
 This means it does not guarantee that committed blocks satisfy these rules!
 It is the application's responsibility to return non-zero response codes when gas limits are exceeded.
 
-The `GasUsed` field is ignored compltely by Tendermint. That said, applications should enforce:
-    - `GasUsed <= GasWanted` for any given transaction
-    - `(sum of GasUsed in a block) <= MaxGas` for every block
+The `GasUsed` field is ignored completely by Tendermint. That said, applications should enforce:
+
+- `GasUsed <= GasWanted` for any given transaction
+- `(sum of GasUsed in a block) <= MaxGas` for every block
 
 In the future, we intend to add a `Priority` field to the responses that can be
 used to explicitly prioritize txs in the mempool for inclusion in a block
@@ -246,8 +247,12 @@ Must have `0 < MaxAge`.
 
 ### Updates
 
-The application may set the consensus params during InitChain, and update them during
-EndBlock.
+The application may set the ConsensusParams during InitChain, and update them during
+EndBlock. If the ConsensusParams is empty, it will be ignored. Each field
+that is not empty will be applied in full. For instance, if updating the
+BlockSize.MaxBytes, applications must also set the other BlockSize fields (like
+BlockSize.MaxGas), even if they are unchanged, as they will otherwise cause the
+value to be updated to 0.
 
 #### InitChain
 
@@ -310,6 +315,30 @@ their state as follows:
 
 For instance, this allows an application's lite-client to verify proofs of
 absence in the application state, something which is much less efficient to do using the block hash.
+
+Some applications (eg. Ethereum, Cosmos-SDK) have multiple "levels" of Merkle trees,
+where the leaves of one tree are the root hashes of others. To support this, and
+the general variability in Merkle proofs, the `ResponseQuery.Proof` has some minimal structure:
+
+```
+message Proof {
+  repeated ProofOp ops
+}
+
+message ProofOp {
+  string type = 1;
+  bytes key = 2;
+  bytes data = 3;
+}
+```
+
+Each `ProofOp` contains a proof for a single key in a single Merkle tree, of the specified `type`.
+This allows ABCI to support many different kinds of Merkle trees, encoding
+formats, and proofs (eg. of presence and absence) just by varying the `type`.
+The `data` contains the actual encoded proof, encoded according to the `type`.
+When verifying the full proof, the root hash for one ProofOp is the value being
+verified for the next ProofOp in the list. The root hash of the final ProofOp in
+the list should match the `AppHash` being verified against.
 
 ### Peer Filtering
 

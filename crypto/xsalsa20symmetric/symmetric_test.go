@@ -6,8 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tendermint/tendermint/crypto"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/tendermint/tendermint/crypto"
 )
 
 func TestSimple(t *testing.T) {

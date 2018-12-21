@@ -7,8 +7,7 @@ application you want to run. So, to run a complete blockchain that does
 something useful, you must start two programs: one is Tendermint Core,
 the other is your application, which can be written in any programming
 language. Recall from [the intro to
-ABCI](../introduction/introduction.md#ABCI-Overview) that Tendermint Core handles all
-the p2p and consensus stuff, and just forwards transactions to the
+ABCI](../introduction/what-is-tendermint.md#abci-overview) that Tendermint Core handles all the p2p and consensus stuff, and just forwards transactions to the
 application when they need to be validated, or when they're ready to be
 committed to a block.
 
@@ -253,14 +252,12 @@ we'll run a Javascript version of the `counter`. To run it, you'll need
 to [install node](https://nodejs.org/en/download/).
 
 You'll also need to fetch the relevant repository, from
-[here](https://github.com/tendermint/js-abci) then install it. As go
-devs, we keep all our code under the `$GOPATH`, so run:
+[here](https://github.com/tendermint/js-abci), then install it:
 
 ```
-go get github.com/tendermint/js-abci &> /dev/null
-cd $GOPATH/src/github.com/tendermint/js-abci/example
-npm install
-cd ..
+git clone https://github.com/tendermint/js-abci.git
+cd js-abci
+npm install abci
 ```
 
 Kill the previous `counter` and `tendermint` processes. Now run the app:
@@ -277,13 +274,16 @@ tendermint node
 ```
 
 Once again, you should see blocks streaming by - but now, our
-application is written in javascript! Try sending some transactions, and
+application is written in Javascript! Try sending some transactions, and
 like before - the results should be the same:
 
 ```
-curl localhost:26657/broadcast_tx_commit?tx=0x00 # ok
-curl localhost:26657/broadcast_tx_commit?tx=0x05 # invalid nonce
-curl localhost:26657/broadcast_tx_commit?tx=0x01 # ok
+# ok
+curl localhost:26657/broadcast_tx_commit?tx=0x00
+# invalid nonce
+curl localhost:26657/broadcast_tx_commit?tx=0x05
+# ok
+curl localhost:26657/broadcast_tx_commit?tx=0x01
 ```
 
 Neat, eh?

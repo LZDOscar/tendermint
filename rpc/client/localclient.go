@@ -61,7 +61,7 @@ func (c *Local) ABCIQuery(path string, data cmn.HexBytes) (*ctypes.ResultABCIQue
 }
 
 func (Local) ABCIQueryWithOptions(path string, data cmn.HexBytes, opts ABCIQueryOptions) (*ctypes.ResultABCIQuery, error) {
-	return core.ABCIQuery(path, data, opts.Height, opts.Trusted)
+	return core.ABCIQuery(path, data, opts.Height, opts.Prove)
 }
 
 func (Local) BroadcastTxCommit(tx types.Tx) (*ctypes.ResultBroadcastTxCommit, error) {
@@ -74,6 +74,14 @@ func (Local) BroadcastTxAsync(tx types.Tx) (*ctypes.ResultBroadcastTx, error) {
 
 func (Local) BroadcastTxSync(tx types.Tx) (*ctypes.ResultBroadcastTx, error) {
 	return core.BroadcastTxSync(tx)
+}
+
+func (Local) UnconfirmedTxs(limit int) (*ctypes.ResultUnconfirmedTxs, error) {
+	return core.UnconfirmedTxs(limit)
+}
+
+func (Local) NumUnconfirmedTxs() (*ctypes.ResultUnconfirmedTxs, error) {
+	return core.NumUnconfirmedTxs()
 }
 
 func (Local) NetInfo() (*ctypes.ResultNetInfo, error) {

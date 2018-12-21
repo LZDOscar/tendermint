@@ -9,8 +9,9 @@ import (
 
 	secp256k1 "github.com/tendermint/btcd/btcec"
 	amino "github.com/tendermint/go-amino"
-	"github.com/tendermint/tendermint/crypto"
 	"golang.org/x/crypto/ripemd160"
+
+	"github.com/tendermint/tendermint/crypto"
 )
 
 //-------------------------------------

@@ -54,11 +54,11 @@ validator set, and that the height of the commit is at least height (or
 greater).
 
 SignedHeader.Commit may be signed by a different validator set, it can get
-certified with a BaseVerifier as long as sufficient signatures from the
+verified with a BaseVerifier as long as sufficient signatures from the
 previous validator set are present in the commit.
 
 DynamicVerifier - this Verifier implements an auto-update and persistence
-strategy to certify any SignedHeader of the blockchain.
+strategy to verify any SignedHeader of the blockchain.
 
 ## Provider and PersistentProvider
 
@@ -88,7 +88,7 @@ type PersistentProvider interface {
 }
 ```
 
-* DBProvider - persistence provider for use with any tmlibs/DB.
+* DBProvider - persistence provider for use with any libs/DB.
 * MultiProvider - combine multiple providers.
 
 The suggested use for local light clients is client.NewHTTPProvider(...) for
@@ -121,7 +121,7 @@ If we cannot update directly from H -> H' because there was too much change to
 the validator set, then we can look for some Hm (H < Hm < H') with a validator
 set Vm.  Then we try to update H -> Hm and then Hm -> H' in two steps.  If one
 of these steps doesn't work, then we continue bisecting, until we eventually
-have to externally validate the valdiator set changes at every block.
+have to externally validate the validator set changes at every block.
 
 Since we never trust any server in this protocol, only the signatures
 themselves, it doesn't matter if the seed comes from a (possibly malicious)

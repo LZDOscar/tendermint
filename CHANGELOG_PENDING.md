@@ -1,8 +1,10 @@
-# Pending
+## v0.27.4
+
+*TBD*
 
 Special thanks to external contributors on this release:
 
-BREAKING CHANGES:
+### BREAKING CHANGES:
 
 * CLI/RPC/Config
 
@@ -10,8 +12,13 @@ BREAKING CHANGES:
 
 * Go API
 
-FEATURES:
+* Blockchain Protocol
 
-IMPROVEMENTS:
+* P2P Protocol
 
-BUG FIXES:
+### FEATURES:
+
+### IMPROVEMENTS:
+
+### BUG FIXES:
+
